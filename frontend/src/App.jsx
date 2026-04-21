@@ -91,6 +91,7 @@ function App() {
   const [currentScenario, setCurrentScenario] = useState(null);
   const [currentProduct, setCurrentProduct] = useState(null);
   const [gid, setGid] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
   const messagesEndRef = useRef(null);
   const thinkingInterval = useRef(null);
   const hasSentWelcome = useRef(false);
@@ -104,42 +105,37 @@ function App() {
   }, []);
 
   const initializeApp = async () => {
-    await detectGid();
-    await Promise.all([
-      fetchOrders(),
-      fetch("/api/coupons").then(res => res.json()).then(data => setCoupons(data)),
-      fetchProgress("withdraw").then(data => {
-        determineScenario(data);
-      })
-    ]);
+    const detectedGid = detectGid();
+    setGid(detectedGid);
+    
+    try {
+      const [ordersData, couponsData, withdrawData] = await Promise.all([
+        fetch(`/api/orders${detectedGid ? `?gid=${detectedGid}` : ''}`).then(res => res.json()),
+        fetch("/api/coupons").then(res => res.json()),
+        fetch(`/api/progress/withdraw${detectedGid ? `?gid=${detectedGid}` : ''}`).then(res => res.json())
+      ]);
+      
+      setOrders(ordersData);
+      setCoupons(couponsData);
+      setIsConnected(true);
+      determineScenario(withdrawData, couponsData, ordersData);
+    } catch (error) {
+      console.error("初始化失败:", error);
+      setMessages([{ id: 1, type: "ai", content: "您好！我是群接龙 AI 客服小群~ 今天有什么可以帮您的？", suggestions: ["查订单", "申请退款", "提现"] }]);
+      setIsConnected(true);
+    }
   };
 
   const detectGid = () => {
     const urlParams = new URLSearchParams(window.location.search);
     const urlGid = urlParams.get('gid');
-    if (urlGid) {
-      setGid(urlGid);
-    } else {
-      setGid("QJL_DEMO_USER");
-    }
+    return urlGid || "QJL_DEMO_USER";
   };
 
-  const fetchOrders = async () => {
-    const response = await fetch(`/api/orders${gid ? `?gid=${gid}` : ''}`);
-    const data = await response.json();
-    setOrders(data);
-    return data;
-  };
-
-  const fetchProgress = async (type) => {
-    const response = await fetch(`/api/progress/${type}${gid ? `?gid=${gid}` : ''}`);
-    return response.json();
-  };
-
-  const determineScenario = (withdrawData) => {
-    const availableCoupons = coupons.filter(c => c.status === "available").length;
-    const pendingOrders = orders.recent?.filter(o => o.status === "shipping") || [];
-    const deliveredOrders = orders.recent?.filter(o => o.status === "delivered") || [];
+  const determineScenario = (withdrawData, couponsData, ordersData) => {
+    const availableCoupons = couponsData?.filter(c => c.status === "available").length || 0;
+    const pendingOrders = ordersData?.recent?.filter(o => o.status === "shipping") || [];
+    const deliveredOrders = ordersData?.recent?.filter(o => o.status === "delivered") || [];
 
     const scenarios = [];
     
@@ -227,8 +223,13 @@ function App() {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "user", content }], gid })
+        body: JSON.stringify({ messages: [{ role: "user", content }], gid: gid || "QJL_DEMO_USER" })
       });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
       const data = await response.json();
       
       if (data.type === "action") {
@@ -237,6 +238,7 @@ function App() {
         setMessages(prev => [...prev, { id: Date.now() + 1, type: "ai", content: data.content, suggestions: data.suggestions }]);
       }
     } catch (error) {
+      console.error("发送消息失败:", error);
       setMessages(prev => [...prev, { id: Date.now() + 1, type: "ai", content: "抱歉，系统暂时无法响应~", suggestions: ["查询订单", "帮助中心"] }]);
     } finally { setIsLoading(false); }
   };
@@ -557,10 +559,10 @@ function App() {
   };
 
   const quickActions = [
-    { label: "一键帮卖", icon: "🚀", action: "navigate", url: "https://qunjielong.com" },
     { label: "查订单", icon: "📦", action: "direct", type: "orders" },
     { label: "申请退款", icon: "💰", action: "direct", type: "refund" },
     { label: "开发票", icon: "🧾", action: "direct", type: "invoice" },
+    { label: "领优惠券", icon: "🎁", action: "direct", type: "coupons" },
     { label: "提现", icon: "💳", action: "direct", type: "withdraw" },
     { label: "人工客服", icon: "👩‍💼", action: "direct", type: "transfer_human" }
   ];
@@ -640,16 +642,40 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-100 via-white to-slate-100 flex items-center justify-center p-4">
-      <div className="w-full max-w-[393px] h-[852px] bg-white/50 backdrop-blur-xl rounded-[24px] shadow-xl overflow-hidden flex flex-col" style={{ boxShadow: "0 20px 60px -15px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9)" }}>
-        <div className="bg-gradient-to-r from-teal-500 via-emerald-500 to-cyan-500 px-5 h-[64px] flex items-center justify-center shadow-md">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-lg bg-white/20 backdrop-blur flex items-center justify-center">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-teal-50/30 to-emerald-50/30 flex items-center justify-center p-4">
+      <div 
+        className="w-full max-w-[393px] h-[852px] rounded-[28px] overflow-hidden flex flex-col"
+        style={{
+          background: "linear-gradient(135deg, rgba(255,255,255,0.9) 0%, rgba(255,255,255,0.85) 100%)",
+          backdropFilter: "blur(40px)",
+          boxShadow: "0 25px 80px -20px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255,255,255,0.95)"
+        }}
+      >
+        <div 
+          className="px-5 h-[64px] flex items-center justify-between"
+          style={{
+            background: "linear-gradient(135deg, #0d9488 0%, #10b981 50%, #14b8a6 100%)",
+            backgroundSize: "200% 200%",
+            animation: "gradient-shift 8s ease infinite",
+            boxShadow: "0 4px 20px rgba(13, 148, 136, 0.3)"
+          }}
+        >
+          <button onClick={() => window.history.back()} className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors">
+            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-white/20 backdrop-blur flex items-center justify-center animate-float">
               <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
               </svg>
             </div>
-            <h1 className="text-base font-semibold text-white">群接龙 AI 客服</h1>
+            <h1 className="text-base font-bold text-white tracking-tight">群接龙 AI 客服</h1>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-300' : 'bg-red-400'} ${isConnected ? 'animate-pulse' : ''}`}></div>
+            <span className="text-xs text-white/70">在线</span>
           </div>
         </div>
         
@@ -663,19 +689,19 @@ function App() {
           
           {isLoading && (
             <div className="flex justify-start">
-              <div className="bg-white/60 backdrop-blur-lg rounded-xl rounded-bl-md px-4 py-3 shadow-sm border border-white/50">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-7 h-7 rounded-full bg-teal-100 flex items-center justify-center">
-                    <svg className="w-4 h-4 text-teal-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="bg-white/80 backdrop-blur-xl rounded-2xl rounded-bl-md px-5 py-3.5 shadow-card">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-teal-100 to-emerald-100 flex items-center justify-center">
+                    <svg className="w-4 h-4 text-teal-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                     </svg>
                   </div>
                   <span className="text-sm text-gray-600 font-medium">{thinkingText}</span>
                 </div>
-                <div className="flex gap-1.5 ml-9 mt-2">
-                  <span className="thinking-dot w-1.5 h-1.5 bg-gray-300 rounded-full"></span>
-                  <span className="thinking-dot w-1.5 h-1.5 bg-gray-300 rounded-full"></span>
-                  <span className="thinking-dot w-1.5 h-1.5 bg-gray-300 rounded-full"></span>
+                <div className="flex gap-2 ml-11 mt-2.5">
+                  <span className="thinking-dot w-2 h-2 bg-teal-300 rounded-full"></span>
+                  <span className="thinking-dot w-2 h-2 bg-teal-300 rounded-full"></span>
+                  <span className="thinking-dot w-2 h-2 bg-teal-300 rounded-full"></span>
                 </div>
               </div>
             </div>
@@ -684,26 +710,26 @@ function App() {
           <div ref={messagesEndRef}/>
         </div>
         
-        <div className="bg-white/40 backdrop-blur-lg border-t border-white/30 px-4 py-2.5">
-          <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-0.5">
+        <div className="bg-white/70 backdrop-blur-xl border-t border-gray-100/50 px-4 pt-4 pb-2">
+          <div className="flex gap-2 overflow-x-auto scrollbar-hide">
             {quickActions.map((item, index) => (
               <button
                 key={index}
                 onClick={() => handleQuickAction(item)}
-                className={"px-3 py-1.5 rounded-full text-xs whitespace-nowrap transition-all duration-200 " + (item.action === "navigate" ? "bg-gradient-to-r from-orange-400 to-amber-500 text-white shadow-sm hover:shadow-md hover:scale-105 active:scale-95" : "bg-white/70 text-gray-600 border border-gray-200/50 hover:bg-white hover:border-teal-200 hover:text-teal-600")}
+                className="flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-teal-50 to-emerald-50 text-teal-700 font-medium text-sm whitespace-nowrap transition-all duration-300 hover:from-teal-100 hover:to-emerald-100 hover:shadow-md hover:scale-105 active:scale-95"
               >
-                <span className="mr-1.5">{item.icon}</span>
-                <span className="font-medium">{item.label}</span>
+                <span className="text-lg">{item.icon}</span>
+                <span>{item.label}</span>
               </button>
             ))}
           </div>
         </div>
         
-        <div className="p-3 bg-white/40 backdrop-blur-lg border-t border-white/30">
-          <div className="flex items-center gap-2">
+        <div className="px-4 pt-5 pb-8 bg-white/80 backdrop-blur-xl border-t border-gray-100/50 safe-area-bottom">
+          <div className="flex items-center gap-3">
             <button
               onClick={() => setShowAttachMenu(!showAttachMenu)}
-              className="w-10 h-10 bg-white/70 backdrop-blur border border-gray-100 rounded-full flex items-center justify-center text-gray-500 hover:text-teal-600 hover:border-teal-200 transition-all duration-200 shadow-sm hover:shadow-md active:scale-95"
+              className="w-11 h-11 bg-gradient-to-br from-gray-50 to-gray-100 hover:from-gray-100 hover:to-gray-200 rounded-xl flex items-center justify-center text-gray-600 hover:text-teal-600 transition-all duration-200 active:scale-95 shadow-sm"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -716,7 +742,7 @@ function App() {
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyPress={(e) => { if (e.key === "Enter") handleSend(); }}
                 placeholder="有什么可以帮到您？"
-                className="w-full px-4 py-2.5 bg-white/70 backdrop-blur border border-gray-100 rounded-full focus:outline-none focus:ring-2 focus:ring-teal-300/50 focus:bg-white transition-all duration-200 text-gray-800 placeholder-gray-400 shadow-sm"
+                className="w-full px-5 py-3.5 bg-white rounded-xl border border-gray-100 focus:outline-none focus:ring-2 focus:ring-teal-300/60 focus:border-teal-200 transition-all duration-200 text-gray-800 placeholder-gray-400 shadow-sm"
                 style={{ fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif" }}
               />
               {inputValue && (
@@ -730,28 +756,31 @@ function App() {
             <button
               onClick={handleSend}
               disabled={isLoading || !inputValue.trim()}
-              className="w-10 h-10 bg-gradient-to-r from-teal-500 to-emerald-500 text-white rounded-full flex items-center justify-center shadow-sm hover:shadow-md disabled:opacity-50 disabled:shadow-none transition-all duration-200 active:scale-95"
+              className="w-11 h-11 rounded-xl flex items-center justify-center shadow-md hover:shadow-lg disabled:opacity-50 disabled:shadow-none transition-all duration-200 active:scale-95"
+              style={{
+                background: "linear-gradient(135deg, #0d9488 0%, #10b981 100%)"
+              }}
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
               </svg>
             </button>
           </div>
           
           {showAttachMenu && (
-            <div className="attach-menu-container absolute bottom-[140px] left-1/2 -translate-x-1/2 w-[393px] max-w-[90vw]">
-              <div className="bg-white rounded-2xl shadow-xl border border-gray-100 p-4 animate-fade-slide-up">
-                <div className="grid grid-cols-3 gap-3">
+            <div className="attach-menu-container absolute bottom-[150px] left-1/2 -translate-x-1/2 w-[393px] max-w-[90vw]">
+              <div className="bg-white rounded-2xl shadow-modal border border-gray-100 p-4 animate-fade-slide-up">
+                <div className="grid grid-cols-3 gap-4">
                   {attachOptions.map((option) => (
                     <button
                       key={option.type}
                       onClick={() => handleAttachSelect(option.type)}
-                      className="flex flex-col items-center gap-2 p-3 rounded-xl hover:bg-gray-50 transition-colors"
+                      className="flex flex-col items-center gap-2 p-4 rounded-2xl hover:bg-gradient-to-br hover:from-teal-50 hover:to-emerald-50 transition-all duration-300 card-hover"
                     >
-                      <div className="w-12 h-12 rounded-full bg-teal-50 flex items-center justify-center text-xl">
+                      <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-teal-50 to-emerald-50 flex items-center justify-center text-2xl">
                         {option.icon}
                       </div>
-                      <span className="text-xs text-gray-600 font-medium">{option.label}</span>
+                      <span className="text-sm font-medium text-gray-700">{option.label}</span>
                     </button>
                   ))}
                 </div>
@@ -813,27 +842,27 @@ function App() {
       
       {showRepurchaseModal && currentProduct && (
         <div className="fixed inset-0 bg-black/10 backdrop-blur-md flex items-end justify-center z-50">
-          <div className="bg-white rounded-t-2xl w-full max-w-[393px] max-h-[80vh] overflow-y-auto animate-fade-slide-up">
-            <div className="sticky top-0 bg-white/95 backdrop-blur p-4 border-b border-gray-100 flex justify-between items-center">
-              <button onClick={() => setShowRepurchaseModal(false)} className="flex items-center gap-1.5 text-gray-500 hover:text-gray-700 transition-colors">
+          <div className="bg-white rounded-t-3xl w-full max-w-[393px] max-h-[80vh] overflow-y-auto animate-fade-slide-up">
+            <div className="sticky top-0 bg-white/95 backdrop-blur-xl p-5 border-b border-gray-100 flex justify-between items-center">
+              <button onClick={() => setShowRepurchaseModal(false)} className="flex items-center gap-1.5 text-gray-600 hover:text-gray-800 transition-colors">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                 </svg>
                 <span className="text-sm font-medium">返回</span>
               </button>
-              <h3 className="font-semibold text-gray-800">再次购买</h3>
-              <button onClick={() => setShowRepurchaseModal(false)} className="w-7 h-7 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center transition-colors">
+              <h3 className="font-bold text-gray-800">再次购买</h3>
+              <button onClick={() => setShowRepurchaseModal(false)} className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center transition-colors">
                 <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             </div>
-            <div className="p-4">
-              <div className="flex gap-4 mb-4">
-                <img src={currentProduct.image} alt={currentProduct.name} className="w-24 h-24 rounded-xl object-cover" />
+            <div className="p-5">
+              <div className="flex gap-4 mb-5">
+                <img src={currentProduct.image} alt={currentProduct.name} className="w-28 h-28 rounded-2xl object-cover shadow-md" />
                 <div className="flex-1">
-                  <h4 className="font-semibold text-gray-800 mb-1">{currentProduct.name}</h4>
-                  <p className="text-sm text-gray-500 mb-2">{currentProduct.desc}</p>
+                  <h4 className="font-bold text-gray-800 text-lg mb-1.5">{currentProduct.name}</h4>
+                  <p className="text-sm text-gray-500 mb-2 line-clamp-2">{currentProduct.desc}</p>
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     <span>产地：{currentProduct.origin}</span>
                     <span>|</span>
@@ -842,26 +871,26 @@ function App() {
                 </div>
               </div>
               
-              <div className="mb-4">
-                <h5 className="text-sm font-medium text-gray-700 mb-2">选择规格</h5>
-                <div className="flex flex-wrap gap-2">
+              <div className="mb-5">
+                <h5 className="text-sm font-semibold text-gray-700 mb-3">选择规格</h5>
+                <div className="flex flex-wrap gap-2.5">
                   {currentProduct.specs.map((spec, index) => (
                     <button
                       key={index}
                       onClick={() => {
                         handleRepurchaseSubmit(spec, currentProduct.prices[index]);
                       }}
-                      className="px-4 py-2 rounded-lg border border-gray-200 text-sm text-gray-700 hover:border-teal-500 hover:text-teal-600 hover:bg-teal-50 transition-all"
+                      className="px-5 py-2.5 rounded-xl border border-gray-200 text-sm text-gray-700 hover:border-teal-500 hover:text-teal-600 hover:bg-gradient-to-br hover:from-teal-50 hover:to-emerald-50 transition-all duration-300"
                     >
-                      {spec} - ¥{currentProduct.prices[index].toFixed(2)}
+                      {spec} - <span className="font-semibold">¥{currentProduct.prices[index].toFixed(2)}</span>
                     </button>
                   ))}
                 </div>
               </div>
               
-              <div className="bg-gray-50 rounded-xl p-3 mb-4">
-                <h5 className="text-xs text-gray-500 mb-1">温馨提示</h5>
-                <p className="text-xs text-gray-600">{currentProduct.storage}</p>
+              <div className="bg-gradient-to-br from-gray-50 to-gray-100 rounded-2xl p-4 mb-5">
+                <h5 className="text-xs font-medium text-gray-500 mb-1.5">温馨提示</h5>
+                <p className="text-sm text-gray-600">{currentProduct.storage}</p>
               </div>
             </div>
           </div>
@@ -884,59 +913,62 @@ function InvoiceFormModal({ type, onSubmit, onClose, onBack }) {
 
   return (
     <div className="fixed inset-0 bg-black/10 backdrop-blur-md flex items-end justify-center z-50">
-      <div className="bg-white rounded-t-2xl w-full max-w-[393px] max-h-[80vh] overflow-y-auto animate-fade-slide-up">
-        <div className="sticky top-0 bg-white/95 backdrop-blur p-4 border-b border-gray-100 flex justify-between items-center">
-          <button onClick={onBack} className="flex items-center gap-1.5 text-gray-500 hover:text-gray-700 transition-colors">
+      <div className="bg-white rounded-t-3xl w-full max-w-[393px] max-h-[80vh] overflow-y-auto animate-fade-slide-up">
+        <div className="sticky top-0 bg-white/95 backdrop-blur-xl p-5 border-b border-gray-100 flex justify-between items-center">
+          <button onClick={onBack} className="flex items-center gap-1.5 text-gray-600 hover:text-gray-800 transition-colors">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
             <span className="text-sm font-medium">返回</span>
           </button>
-          <h3 className="font-semibold text-gray-800">填写{type === "personal" ? "个人" : "企业"}发票信息</h3>
-          <button onClick={onClose} className="w-7 h-7 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center transition-colors">
+          <h3 className="font-bold text-gray-800">填写{type === "personal" ? "个人" : "企业"}发票信息</h3>
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center transition-colors">
             <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
-        <div className="p-4 space-y-4">
+        <div className="p-5 space-y-4">
           {type === "company" && (
             <>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">企业名称 <span className="text-red-500">*</span></label>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">企业名称 <span className="text-red-500">*</span></label>
                 <input
                   type="text"
                   value={formData.companyName}
                   onChange={(e) => handleChange("companyName", e.target.value)}
                   placeholder="请输入企业名称"
-                  className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-300/50 focus:border-transparent transition-all"
+                  className="w-full px-5 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-300/60 focus:border-teal-200 transition-all"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">税号</label>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">税号</label>
                 <input
                   type="text"
                   value={formData.taxId}
                   onChange={(e) => handleChange("taxId", e.target.value)}
                   placeholder="请输入税号（选填）"
-                  className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-300/50 focus:border-transparent transition-all"
+                  className="w-full px-5 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-300/60 focus:border-teal-200 transition-all"
                 />
               </div>
             </>
           )}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">接收邮箱 <span className="text-red-500">*</span></label>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">接收邮箱 <span className="text-red-500">*</span></label>
             <input
               type="email"
               value={formData.email}
               onChange={(e) => handleChange("email", e.target.value)}
               placeholder="请输入接收发票的邮箱"
-              className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-300/50 focus:border-transparent transition-all"
+              className="w-full px-5 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-300/60 focus:border-teal-200 transition-all"
             />
           </div>
           <button
             onClick={handleSubmit}
-            className="w-full py-3.5 bg-gradient-to-r from-teal-500 to-emerald-500 text-white rounded-xl font-medium shadow-sm hover:shadow-md transition-all active:scale-[0.98]"
+            className="w-full py-3.5 rounded-xl font-semibold text-white shadow-md hover:shadow-lg transition-all duration-300 active:scale-[0.98]"
+            style={{
+              background: "linear-gradient(135deg, #0d9488 0%, #10b981 100%)"
+            }}
           >
             提交发票申请
           </button>

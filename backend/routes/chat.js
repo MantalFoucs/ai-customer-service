@@ -1,4 +1,4 @@
-﻿import express from 'express';
+import express from 'express';
 import axios from 'axios';
 import { getMockOrders, getMockLogistics } from './mockData.js';
 import fs from 'fs';
@@ -41,7 +41,7 @@ ${knowledgeBase}
 function getMockReply(userMessage) {
   const msg = userMessage.toLowerCase();
   
-  if (msg.includes('订单') || msg.includes('物流') || msg.includes('快递') || msg.includes('包裹') || msg.includes('到哪')) {
+  if (msg.includes('订单') || msg.includes('物流') || msg.includes('快递') || msg.includes('包裹') || msg.includes('到哪') || msg.includes('运输')) {
     return '{"action":"show_orders", "message":"请选择您的订单"}';
   }
   
@@ -72,7 +72,13 @@ router.post('/chat', async (req, res) => {
     if (!DASHSCOPE_API_KEY || DASHSCOPE_API_KEY === 'sk-your-api-key-here') {
       console.log('Using mock response for:', userMessage);
       const reply = getMockReply(userMessage);
-      return res.json({ reply });
+      
+      try {
+        const parsed = JSON.parse(reply);
+        return res.json({ type: "action", action: { type: parsed.action, content: parsed.message }, suggestions: ["查订单", "申请退款", "提现"] });
+      } catch {
+        return res.json({ content: reply, suggestions: ["查订单", "申请退款", "提现"] });
+      }
     }
     
     const response = await axios.post(
@@ -94,12 +100,24 @@ router.post('/chat', async (req, res) => {
     );
     
     const reply = response.data.choices[0].message.content;
-    res.json({ reply });
+    
+    try {
+      const parsed = JSON.parse(reply);
+      return res.json({ type: "action", action: { type: parsed.action, content: parsed.message }, suggestions: ["查订单", "申请退款", "提现"] });
+    } catch {
+      return res.json({ content: reply, suggestions: ["查订单", "申请退款", "提现"] });
+    }
   } catch (error) {
     console.error('API Error:', error.response?.data || error.message);
     
     const fallbackReply = getMockReply(userMessage);
-    res.json({ reply: fallbackReply });
+    
+    try {
+      const parsed = JSON.parse(fallbackReply);
+      return res.json({ type: "action", action: { type: parsed.action, content: parsed.message }, suggestions: ["查订单", "申请退款", "提现"] });
+    } catch {
+      return res.json({ content: fallbackReply, suggestions: ["查订单", "申请退款", "提现"] });
+    }
   }
 });
 
